@@ -30,7 +30,7 @@ It supports one journey: **submit an expense in any currency, have it converted 
 - **Web UI** (`ui/app.py`):
   - a form to submit expenses
   - a table of expenses, with amounts in rupees and status labels
-  - a *Generate insights* button
+  - a *Generate insights* button, which shows the insights and a **spend-by-category bar chart**
 
 INR amounts are shown with the ₹ symbol and Indian lakh/crore grouping, e.g. `₹1,25,000.00`.
 
@@ -87,7 +87,7 @@ To check it worked, run this. It should print `0`, meaning no compiled SQLAlchem
 (Get-ChildItem .venv\Lib\site-packages\sqlalchemy -Recurse -Filter *.pyd).Count
 ```
 
-> **pandas is blocked too.** Streamlit installs pandas, and Smart App Control also blocks pandas's compiled extension. The UI therefore avoids pandas-based Streamlit elements, such as `st.dataframe`, and draws its table as Markdown. `tests/test_ui.py` runs the UI with pandas made unimportable, to catch any regression.
+> **pandas is blocked too.** Streamlit installs pandas, and Smart App Control also blocks pandas's compiled extension. The UI therefore avoids pandas-based Streamlit elements, such as `st.dataframe` and `st.bar_chart`. It draws its table as Markdown and its chart with `st.vega_lite_chart`, using data placed inside each chart layer. `tests/test_ui.py` runs the UI with pandas made unimportable, to catch any regression.
 
 ---
 
@@ -144,13 +144,25 @@ streamlit run ui/app.py
 
 Streamlit prints the URL, usually **http://localhost:8501**.
 
+The page has three sections:
+
+- **Submit an expense:** enter the amount in normal units (e.g. `1250.50`). The UI converts it to minor units using each currency's decimal places. The button is disabled while the request is in flight.
+- **Expenses:** a table showing the original amount, the amount in ₹, and the status (🟡 Pending, 🟢 Approved, 🔴 Rejected). Descriptions come back from the API already masked.
+- **Generate insights:** calls `GET /expenses/insights` and shows the summary, the three bullets, and whether Claude wrote them. Below them is the **spend chart**:
+  - **Axes and order:** one bar per category (x-axis) showing total INR spend (y-axis, with ₹ and Indian grouping). The largest category comes first, and each bar's total is labelled on top.
+  - **Segments:** each bar is stacked from **one segment per expense**, oldest at the bottom. **Hover a segment** to see its amount, date (UTC), description, category and the category total.
+  - **Unconverted expenses** have no INR amount, so they're left out, and a note under the chart says how many.
+  - **Theme:** colours follow Streamlit's light or dark theme.
+
+The chart uses `st.vega_lite_chart`, with its data placed inside each chart layer. Streamlit converts *top-level* chart data with pandas, which Smart App Control blocks (see the note under Setup). Layer data goes straight to the browser.
+
 ### Tests
 
 ```powershell
 python -m pytest -q
 ```
 
-There are 54 tests across `test_api.py`, `test_insights.py`, `test_sanitize.py` and `test_ui.py`. They are self-contained:
+There are 56 tests across `test_api.py`, `test_insights.py`, `test_sanitize.py` and `test_ui.py`. They are self-contained:
 - **Their own database:** each API test gets a new temporary SQLite database, so your `expenseflow.db` is never touched.
 - **No network:** the exchange-rate API is faked at the httpx transport level, and the Anthropic client is always replaced by a stub. No test calls the network or spends API credit.
 - **No running server:** the UI tests run the Streamlit app headlessly (`AppTest`) against a faked API.

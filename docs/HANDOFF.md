@@ -118,7 +118,7 @@ All configuration comes from environment variables, or from a `.env` file in the
 
 ## Verifying a deployment
 
-1. **Run the tests:** `python -m pytest -q` should pass all 54. They're offline, use temporary databases, and never call real external APIs.
+1. **Run the tests:** `python -m pytest -q` should pass all 56. They're offline, use temporary databases, and never call real external APIs.
 2. **Check the process is up:** `GET /openapi.json` → 200.
 3. **Check auth is active:** `POST /expenses` without `X-API-Key` → 401 `{"detail": "missing or invalid X-API-Key header"}`.
 4. **Check FX:** `POST /expenses` with a USD amount and a valid key → 201 with `amount_base_display` set. A 202 means the FX API isn't reachable from the host.
