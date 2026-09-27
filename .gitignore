@@ -1,0 +1,13 @@
+# Secrets (ANTHROPIC_API_KEY etc.)
+.env
+
+# Virtual environment
+.venv/
+
+# Python caches
+__pycache__/
+.pytest_cache/
+
+# Local SQLite database and backups
+expenseflow.db
+*.db.bak*

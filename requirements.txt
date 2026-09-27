@@ -1,0 +1,24 @@
+# Install (PowerShell), from the project root:
+#   $env:DISABLE_SQLALCHEMY_CEXT='1'; .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# Why: Windows Smart App Control blocks SQLAlchemy's compiled extensions
+# (ImportError: "DLL load failed ... An Application Control policy has blocked this file").
+# The --no-binary line below builds SQLAlchemy from source, and DISABLE_SQLALCHEMY_CEXT=1
+# makes that build pure Python. Both are needed; pip cannot set the env var from this file.
+#
+# Check: this should print 0 (no compiled files in SQLAlchemy):
+#   (Get-ChildItem .venv\Lib\site-packages\sqlalchemy -Recurse -Filter *.pyd).Count
+--no-binary sqlalchemy
+
+fastapi==0.141.1
+uvicorn==0.54.0
+SQLAlchemy==2.1.1
+httpx==0.28.1
+pydantic==2.13.5
+python-dotenv==1.2.3
+pytest==9.1.1
+anthropic==1.8.0
+
+# UI (ui/app.py). Streamlit also installs pandas, whose compiled extension Smart App Control
+# blocks here, so the UI avoids pandas-backed elements such as st.dataframe.
+streamlit==1.64.0
