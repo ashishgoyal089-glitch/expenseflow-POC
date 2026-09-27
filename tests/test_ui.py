@@ -175,3 +175,82 @@ def test_submit_button_reenabled_when_api_is_down(
 
     assert any("Can't reach the ExpenseFlow API" in e.value for e in at.error)
     assert submit_button(at).disabled is False
+
+
+def chart_expense(id_: int, category: str, paise: int | None, created: str) -> dict:
+    return {
+        **EXPENSES[0],
+        "id": id_,
+        "description": f"expense {id_}",
+        "category": category,
+        "amount_base_minor": paise,
+        "created_at": f"{created}T10:00:00+00:00",
+    }
+
+
+def test_insights_show_spend_chart_by_category(
+    monkeypatch: pytest.MonkeyPatch, block_pandas: None
+) -> None:
+    import json
+
+    expenses = [
+        chart_expense(1, "Travel", 1437300, "2026-09-20"),
+        chart_expense(2, "Travel", 50000, "2026-09-21"),
+        chart_expense(3, "Meals", 125050, "2026-09-22"),
+        chart_expense(4, "Meals", None, "2026-09-23"),  # unconverted: not charted
+    ]
+
+    def handler(method: str, url: str, **kwargs: object) -> httpx.Response:
+        if url.endswith("/insights"):
+            insight = {"summary": "s", "bullets": ["a", "b", "c"], "source": "rules"}
+            return httpx.Response(200, json={"insight": insight})
+        return httpx.Response(200, json=expenses)
+
+    fake_api(monkeypatch, handler)
+    at = run_app()
+    assert not at.get("vega_lite_chart")  # only after clicking the button
+
+    next(b for b in at.button if b.label == "Generate insights").click()
+    at.run()
+    assert not at.exception, at.exception
+
+    chart = at.get("vega_lite_chart")[0]
+    spec = json.loads(chart.proto.spec)
+    # Data stays inside the layers, so Streamlit never converts it with pandas.
+    assert "data" not in spec and not chart.proto.data.data
+    segments, _, totals = (layer["data"]["values"] for layer in spec["layer"])
+
+    # Categories ordered by total, labelled exactly from integer paise.
+    assert [(t["category"], t["total_label"]) for t in totals] == [
+        ("Travel", "₹14,873.00"),
+        ("Meals", "₹1,250.50"),
+    ]
+    # One segment per converted expense, oldest at the bottom, each with its date for hover.
+    travel = [s for s in segments if s["category"] == "Travel"]
+    assert [(s["date"], s["amount_label"], s["y0"], s["y1"], s["is_top"]) for s in travel] == [
+        ("2026-09-20", "₹14,373.00", 0.0, 14373.0, False),
+        ("2026-09-21", "₹500.00", 14373.0, 14873.0, True),
+    ]
+    assert "expense 4" not in json.dumps(spec)
+    tooltip_titles = [t["title"] for t in spec["layer"][0]["encoding"]["tooltip"]]
+    assert tooltip_titles[:2] == ["Amount", "Date (UTC)"]
+    assert "1 expense(s) awaiting conversion" in at.caption[-1].value
+
+
+def test_spend_chart_when_nothing_is_converted(
+    monkeypatch: pytest.MonkeyPatch, block_pandas: None
+) -> None:
+    def handler(method: str, url: str, **kwargs: object) -> httpx.Response:
+        if url.endswith("/insights"):
+            insight = {"summary": "s", "bullets": [], "source": "rules"}
+            return httpx.Response(200, json={"insight": insight})
+        return httpx.Response(200, json=[chart_expense(1, "Travel", None, "2026-09-20")])
+
+    fake_api(monkeypatch, handler)
+    at = run_app()
+    next(b for b in at.button if b.label == "Generate insights").click()
+    at.run()
+
+    assert not at.exception, at.exception
+    assert not at.get("vega_lite_chart")
+    assert any("nothing to chart" in i.value for i in at.info)

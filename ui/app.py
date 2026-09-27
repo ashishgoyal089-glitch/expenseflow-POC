@@ -38,6 +38,31 @@ STATUS_LABELS: dict[str, str] = {
     "rejected": "🔴 Rejected",
 }
 
+# Spend chart colours, per Streamlit theme. One series, so one hue (validated >= 3:1 against
+# each surface); text and gridlines use text/neutral tones, never the bar colour.
+CHART_THEMES: dict[str, dict[str, str]] = {
+    "light": {
+        "bar": "#2a78d6",
+        "surface": "#ffffff",
+        "text": "#31333f",
+        "muted": "#6b6c75",
+        "grid": "#ebebeb",
+    },
+    "dark": {
+        "bar": "#3987e5",
+        "surface": "#0e1117",
+        "text": "#fafafa",
+        "muted": "#a3a8b8",
+        "grid": "#262730",
+    },
+}
+# Vega expression: y-axis ticks as ₹ with Indian digit grouping (₹1,25,000).
+INR_AXIS_LABEL: str = (
+    r"'₹' + (datum.value < 1000 ? format(datum.value, 'd') : "
+    r"replace(slice(format(datum.value, 'd'), 0, -3), regexp('\\B(?=(\\d{2})+(?!\\d))', 'g'), ',')"
+    r" + ',' + slice(format(datum.value, 'd'), -3))"
+)
+
 # Session-state keys for the submit flow.
 SUBMITTING: str = "submitting"  # True while a POST is in flight; disables the button
 PENDING_SUBMISSION: str = "pending_submission"  # form values captured by the click callback
@@ -317,6 +342,147 @@ def insights_section() -> None:
         st.caption("Written by Claude.")
     else:
         st.caption("Computed from your expense data (Claude was not used).")
+
+    spend_chart()
+
+
+def spend_chart_data(expenses: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Per-expense bar segments and per-category totals for the spend chart.
+
+    Only converted expenses (with an INR amount) are included. Within a category, segments
+    are stacked oldest first; categories are ordered by total, largest first. Plot positions
+    are rupees as floats (display only); every value a person reads comes from the exact
+    integer paise via format_rupees.
+    """
+    by_category: dict[str, list[dict]] = {}
+    for e in sorted(expenses, key=lambda e: (e["created_at"], e["id"])):
+        if e["amount_base_minor"] is not None:
+            by_category.setdefault(e["category"], []).append(e)
+
+    segments: list[dict] = []
+    totals: list[dict] = []
+    for category, items in by_category.items():
+        total_paise = sum(e["amount_base_minor"] for e in items)
+        running = 0
+        for i, e in enumerate(items):
+            segments.append(
+                {
+                    "category": category,
+                    "date": e["created_at"][:10],
+                    "description": e["description"],
+                    "amount_label": format_rupees(e["amount_base_minor"]),
+                    "total_label": format_rupees(total_paise),
+                    "y0": running / 100,
+                    "y1": (running + e["amount_base_minor"]) / 100,
+                    "is_top": i == len(items) - 1,
+                }
+            )
+            running += e["amount_base_minor"]
+        totals.append(
+            {
+                "category": category,
+                "total": total_paise / 100,
+                "total_label": format_rupees(total_paise),
+            }
+        )
+    totals.sort(key=lambda t: -t["total"])
+    return segments, totals
+
+
+def spend_chart_spec(segments: list[dict], totals: list[dict], mode: str) -> dict:
+    """Vega-Lite spec: one bar per category, one segment per expense (hover shows its date).
+
+    Data sits inside each layer, not at the top level: Streamlit converts top-level data with
+    pandas, which Smart App Control blocks here. Inline layer data goes straight to the browser.
+    """
+    colors = CHART_THEMES[mode]
+    order = [t["category"] for t in totals]
+    bar = {"type": "bar", "width": 24, "stroke": colors["surface"], "strokeWidth": 2}
+    tooltip = [
+        {"field": "amount_label", "title": "Amount"},
+        {"field": "date", "title": "Date (UTC)"},
+        {"field": "description", "title": "Expense"},
+        {"field": "category", "title": "Category"},
+        {"field": "total_label", "title": "Category total"},
+    ]
+
+    def segment_layer(top: bool) -> dict:
+        name = "hover_top" if top else "hover_rest"
+        mark = {**bar, "cornerRadiusTopLeft": 4, "cornerRadiusTopRight": 4} if top else bar
+        return {
+            "data": {"values": segments},
+            "transform": [{"filter": "datum.is_top" if top else "!datum.is_top"}],
+            "params": [
+                {"name": name, "select": {"type": "point", "on": "pointerover", "clear": "pointerout"}}
+            ],
+            "mark": mark,
+            "encoding": {
+                "x": {"field": "category", "type": "nominal", "sort": order, "title": None,
+                      "axis": {"labelAngle": 0}},
+                "y": {"field": "y1", "type": "quantitative", "title": "Spend (₹)",
+                      "axis": {"labelExpr": INR_AXIS_LABEL}},
+                "y2": {"field": "y0"},
+                "color": {"value": colors["bar"]},
+                # The hovered segment lightens so the reader sees it respond.
+                "opacity": {"condition": {"param": name, "empty": False, "value": 0.7}, "value": 1},
+                "tooltip": tooltip,
+            },
+        }
+
+    return {
+        "height": 320,
+        "padding": {"top": 18, "right": 5, "bottom": 5, "left": 5},  # room for the tallest total
+        "layer": [
+            segment_layer(top=False),
+            segment_layer(top=True),
+            {
+                # Category total on each bar's cap, in text colour (never the bar colour).
+                "data": {"values": totals},
+                "mark": {"type": "text", "dy": -8, "fontSize": 12, "color": colors["text"]},
+                "encoding": {
+                    "x": {"field": "category", "type": "nominal", "sort": order},
+                    "y": {"field": "total", "type": "quantitative"},
+                    "text": {"field": "total_label"},
+                },
+            },
+        ],
+        "config": {
+            "view": {"stroke": None},
+            "axis": {
+                "gridColor": colors["grid"],
+                "domainColor": colors["grid"],
+                "tickColor": colors["grid"],
+                "labelColor": colors["muted"],
+                "titleColor": colors["muted"],
+            },
+        },
+    }
+
+
+def spend_chart() -> None:
+    """Bar chart of INR spend by category, from GET /expenses."""
+    st.markdown("**Spend by category**")
+    try:
+        response = api_request("GET", "/expenses")
+    except ApiError as e:
+        st.error(str(e))
+        return
+    if response.status_code != 200:
+        st.error(error_message(response))
+        return
+
+    expenses = response.json()
+    segments, totals = spend_chart_data(expenses)
+    if not segments:
+        st.info("No expenses have been converted to INR yet, so there's nothing to chart.")
+        return
+    mode = "dark" if st.context.theme.type == "dark" else "light"
+    st.vega_lite_chart(spend_chart_spec(segments, totals, mode), width="stretch")
+    unconverted = sum(1 for e in expenses if e["amount_base_minor"] is None)
+    note = "Each bar is one category; each segment is one expense. Hover a segment for its date."
+    if unconverted:
+        note += f" {unconverted} expense(s) awaiting conversion to INR aren't shown."
+    st.caption(note)
 
 
 st.set_page_config(page_title="ExpenseFlow", page_icon="💸")
